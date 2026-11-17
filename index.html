@@ -5669,27 +5669,6 @@ function tcmDeleteZero(id) {
   if (z) dbRun(`UPDATE OC_TC_TXN SET tcCode=NULL WHERE tcCode=?`, [z.codigo]);
   closeModal(); showToast('Plan eliminado. Sus cuotas siguen en la tarjeta, sin vínculo.', 'success'); tcmAfterChange();
 }
-function tcmOpenZeroPay(zeroId, id) {
-  const p = id ? dbOne(`SELECT * FROM OC_TC_ZEROPAY WHERE id=?`, [id]) : null;
-  openModal(`<div class="modal"><div class="modal-head"><h3>${p?'Editar abono directo':'Abono directo al plan'}</h3><button class="modal-close" onclick="closeModal()" aria-label="Cerrar">✕</button></div>
-    <div class="modal-body"><p class="hint" style="margin-top:0;">Úsalo para pagos que el banco aplicó directo al plan, fuera de las cuotas mensuales.</p><div class="form-grid">
-      <div class="field"><label for="zp-amount">Monto</label><input id="zp-amount" type="number" step="0.01" min="0" value="${p?p.amount:''}"></div>
-      <div class="field"><label for="zp-date">Fecha</label><input id="zp-date" type="date" value="${p?String(p.date).slice(0,10):tcmToday()}"></div>
-      <div class="field span-2"><label for="zp-desc">Descripción</label><input id="zp-desc" value="${escapeHtml(p?p.descr||'':'')}"></div>
-    </div></div>
-    <div class="modal-foot">${p?`<button class="btn danger" onclick="dbRun('DELETE FROM OC_TC_ZEROPAY WHERE id=?',['${p.id}']);closeModal();tcmAfterChange();">Eliminar</button>`:''}
-      <button class="btn ghost" onclick="closeModal()">Cancelar</button><button class="btn primary" onclick="tcmSaveZeroPay('${zeroId}', ${p?`'${p.id}'`:'null'})">Guardar</button></div></div>`);
-}
-function tcmSaveZeroPay(zeroId, id) {
-  const amount = parseFloat(document.getElementById('zp-amount').value);
-  if (!(amount>0)) { showToast('Escribe el monto del abono.', 'error'); return; }
-  dbRun(`INSERT OR REPLACE INTO OC_TC_ZEROPAY (id, zeroId, date, amount, descr) VALUES (?,?,?,?,?)`,
-    [id||tcmUid(), zeroId, document.getElementById('zp-date').value || tcmToday(), amount, document.getElementById('zp-desc').value.trim()]);
-  const z = dbOne(`SELECT * FROM OC_TC_ZERO WHERE id=?`, [zeroId]);
-  if (z && z.activa && Number(z.montoOriginal)>0 && tcmZeroStats(z).pend<=0.004) { dbRun(`UPDATE OC_TC_ZERO SET activa=0 WHERE id=?`, [zeroId]); showToast('Plan liquidado.', 'success'); }
-  closeModal(); tcmAfterChange();
-}
-
 /* ---------- pestaña: distribución ---------- */
 function tcmDistData(cards) {
   const S = tcmState();
@@ -8722,7 +8701,9 @@ function ocZeroDiagnose(z) {
 function ocZeroOpenReconcile(zid) {
   ocZeroEnsureCols();
   const z = dbOne(`SELECT * FROM OC_TC_ZERO WHERE id=?`, [zid]); if (!z || !z.debtAccountId) return;
-  const st = tcmZeroStats(z), info = ocZeroDebtInfo(z), D = ocZeroDiagnose(z);
+  const st = tcmZeroStats(z), info = ocZeroDebtInfo(z), D = ocZeroDiagnose(z), P = ocZeroPayDiagnose(z);
+  const payIds = ocPayFromIds(z.debtAccountId), defFrom = ocDefaultPayFrom(z.debtAccountId);
+  const srcName = id => { const a = ocAccRows([id])[0]; return a ? ocAccParts(a).name : '—'; };
   const fix = D.asExpense.reduce((s,t)=>s+Math.abs(t.amount)/SCALE, 0);
   const row = (t, kind) => `<label class="zr-row"><input type="checkbox" class="zr-${kind}" value="${t.id}" checked>
       <div style="min-width:0"><div class="zr-n">${escapeHtml(t.itemName||'Cuota')}</div><div class="zr-d">${tcmDayLabel(t.date)}</div></div><div class="zr-a">${tcmMoney(Math.abs(t.amount)/SCALE)}</div></label>`;
@@ -8740,16 +8721,47 @@ function ocZeroOpenReconcile(zid) {
       ${D.unlinked.length ? `<div class="tcm-sub">Cuotas que abonaron la cuenta pero no están vinculadas al plan <span>${D.unlinked.length}</span></div>
         <p class="hint" style="margin-top:0;">Se marcan como cuotas de ${escapeHtml(z.codigo)} para que el pendiente del plan las cuente.</p>
         <div class="tcm-list">${D.unlinked.map(t=>row(t,'lnk')).join('')}</div>` : ''}
-      ${!D.asExpense.length && !D.unlinked.length ? `<p class="hint">No encontré cuotas por corregir. Si aún hay diferencia, revisa el monto original del plan, los abonos directos o el saldo inicial de la cuenta.</p>` : ''}
+      ${P.missing.length ? `<div class="tcm-sub">Abonos directos del plan que no llegaron a la cuenta <span>${P.missing.length} · ${tcmMoney(P.missing.reduce((s,m)=>s+m.p.amount,0))}</span></div>
+        <p class="hint" style="margin-top:0;">Si el pago ya está en la cuenta, solo se vinculan. Si no, se crea la transferencia desde la cuenta que elijas.</p>
+        <div class="tcm-list">${P.missing.map(m=>`<label class="zr-row"><input type="checkbox" class="zr-pay" value="${m.p.id}" data-match="${m.match?m.match.id:''}" checked>
+          <div style="min-width:0"><div class="zr-n">${escapeHtml(m.p.descr||'Abono directo')}</div>
+            <div class="zr-d">${tcmDayLabel(String(m.p.date))} · ${m.match ? `ya está en la cuenta (desde ${escapeHtml(srcName(m.match.src))}): se vincula` : 'se creará el abono'}</div>
+            ${m.match ? '' : `<div style="margin-top:6px;" onclick="event.preventDefault()">${accPickerField('zr-src-'+m.p.id, defFrom, { ids: payIds, title:'¿Desde qué cuenta se pagó?' })}</div>`}</div>
+          <div class="zr-a">${tcmMoney(m.p.amount)}</div></label>`).join('')}</div>` : ''}
+      ${P.orphan.length ? `<div class="tcm-sub">Pagos en la cuenta que el plan no tiene <span>${P.orphan.length} · ${tcmMoney(P.orphan.reduce((s,t)=>s+t.amount/SCALE,0))}</span></div>
+        <p class="hint" style="margin-top:0;">Transferencias a la cuenta desde otras cuentas (no tarjetas). Se agregan al plan como abonos directos.</p>
+        <div class="tcm-list">${P.orphan.map(t=>`<label class="zr-row"><input type="checkbox" class="zr-orph" value="${t.id}" checked>
+          <div style="min-width:0"><div class="zr-n">${escapeHtml(t.itemName||t.notes||'Abono')}</div><div class="zr-d">${tcmDayLabel(t.date)} · desde ${escapeHtml(srcName(t.src))}</div></div>
+          <div class="zr-a">${tcmMoney(t.amount/SCALE)}</div></label>`).join('')}</div>` : ''}
+      ${!D.asExpense.length && !D.unlinked.length && !P.missing.length && !P.orphan.length ? `<p class="hint">No encontré cuotas por corregir. Si aún hay diferencia, revisa el monto original del plan, los abonos directos o el saldo inicial de la cuenta.</p>` : ''}
     </div>
-    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cerrar</button>${D.asExpense.length || D.unlinked.length ? `<button class="btn primary" onclick="ocZeroApplyReconcile('${z.id}')">Aplicar correcciones</button>` : ''}</div></div>`);
+    <div class="modal-foot"><button class="btn ghost" onclick="closeModal()">Cerrar</button>${D.asExpense.length || D.unlinked.length || P.missing.length || P.orphan.length ? `<button class="btn primary" onclick="ocZeroApplyReconcile('${z.id}')">Aplicar correcciones</button>` : ''}</div></div>`);
 }
 function ocZeroApplyReconcile(zid) {
   const z = dbOne(`SELECT * FROM OC_TC_ZERO WHERE id=?`, [zid]);
   const exp = Array.from(document.querySelectorAll('.zr-exp:checked')).map(i=>Number(i.value));
   const lnk = Array.from(document.querySelectorAll('.zr-lnk:checked')).map(i=>Number(i.value));
+  const pays = Array.from(document.querySelectorAll('.zr-pay:checked')).map(i=>({ id:i.value, match: i.dataset.match ? Number(i.dataset.match) : null, from: Number((document.getElementById('zr-src-'+i.value)||{}).value) || null }));
+  const orph = Array.from(document.querySelectorAll('.zr-orph:checked')).map(i=>Number(i.value));
+  ocZeroPayEnsureCols();
   App.db.run('BEGIN');
   try {
+    pays.forEach(x=>{
+      const p = dbOne(`SELECT * FROM OC_TC_ZEROPAY WHERE id=?`, [x.id]); if (!p) return;
+      if (x.match) {
+        const src = (dbOne(`SELECT accountPairID a FROM TRANSACTIONSTABLE WHERE transactionsTableID=?`, [x.match])||{}).a || null;
+        App.db.run(`UPDATE OC_TC_ZEROPAY SET txnId=?, fromAccountId=? WHERE id=?`, [x.match, src, p.id]);
+      } else {
+        if (!x.from) throw new Error('Elige desde qué cuenta se pagó cada abono.');
+        const tid = ocZeroPayTransfer(null, { amount:p.amount, day:String(p.date).slice(0,10), debtAcc:z.debtAccountId, fromAcc:x.from, descr:p.descr||'Abono a tasa cero' });
+        App.db.run(`UPDATE OC_TC_ZEROPAY SET txnId=?, fromAccountId=? WHERE id=?`, [tid, x.from, p.id]);
+      }
+    });
+    orph.forEach(id=>{
+      const t = dbOne(`SELECT tr.*, i.itemName FROM TRANSACTIONSTABLE tr LEFT JOIN ITEMTABLE i ON i.itemTableID=tr.itemID WHERE tr.transactionsTableID=?`, [id]); if (!t) return;
+      App.db.run(`INSERT INTO OC_TC_ZEROPAY (id, zeroId, date, amount, descr, txnId, fromAccountId) VALUES (?,?,?,?,?,?,?)`,
+        [tcmUid(), z.id, t.date.slice(0,10), Math.abs(t.amount)/SCALE, t.itemName || t.notes || 'Abono', id, t.accountPairID]);
+    });
     exp.forEach(id=>ocChargeToCuota(id, z.debtAccountId));
     lnk.forEach(id=>{
       const t = dbOne(`SELECT accountID, date FROM TRANSACTIONSTABLE WHERE transactionsTableID=?`, [id]);
@@ -8765,6 +8777,145 @@ function ocZeroApplyReconcile(zid) {
   const st = tcmZeroStats(z), info = ocZeroDebtInfo(z);
   showToast(`${z.codigo} conciliado: pendiente ${tcmMoney(st.pend)} en Tarjetas y ${tcmMoney(info.debt)} en Cuentas.`, 'success');
   tcmAfterChange();
+}
+
+/* =====================================================================
+   ABONOS DIRECTOS AL PLAN ↔ CUENTA DE LA DEUDA (v9.1)
+   Si el plan tiene cuenta de deuda, un abono directo (pago anticipado,
+   cancelación total, pago en agencia…) se registra como transferencia
+   desde la cuenta con la que pagaste hacia la cuenta de la deuda.
+   Los abonos anteriores al saldo inicial de esa cuenta ("históricos")
+   solo se anotan en el plan: la cuenta ya nació con esa deuda descontada.
+   ===================================================================== */
+function ocZeroPayEnsureCols() {
+  try {
+    const cols = dbAll(`PRAGMA table_info(OC_TC_ZEROPAY)`).map(c=>c.name);
+    if (cols.length && !cols.includes('txnId')) App.db.run(`ALTER TABLE OC_TC_ZEROPAY ADD COLUMN txnId INTEGER`);
+    if (cols.length && !cols.includes('fromAccountId')) App.db.run(`ALTER TABLE OC_TC_ZEROPAY ADD COLUMN fromAccountId INTEGER`);
+  } catch(e) { console.warn('OC_TC_ZEROPAY:', e); }
+}
+/* Cuentas desde las que se puede pagar (todas menos la propia deuda) */
+function ocPayFromIds(debtAcc) { return getAccounts(true).filter(a=>a.accountsTableID !== debtAcc).map(a=>a.accountsTableID); }
+function ocDefaultPayFrom(debtAcc) {
+  const saved = budCfg('zeroPayFrom', null);
+  const ids = ocPayFromIds(debtAcc);
+  if (saved && ids.includes(Number(saved))) return Number(saved);
+  const cash = getAccounts(false).find(a=>a.accountingGroupID !== 2 && /efectivo/i.test(a.accountName));
+  return cash ? cash.accountsTableID : (getAccounts(false).find(a=>a.accountingGroupID !== 2)||{}).accountsTableID;
+}
+function ocIsHistoric(day, debtAcc) { const s = ocDebtStart(debtAcc); return !!(s && day && day < s.slice(0,10)); }
+
+/* Crea o actualiza la transferencia de un abono directo. Devuelve el id del lado de la deuda. */
+function ocZeroPayTransfer(p, o) {
+  const scaled = Math.round(o.amount*SCALE);
+  const dateStr = `${o.day} ${o.time || '12:00'}:00.000`;
+  const itemId = getOrCreateItemIdSilent(o.descr || 'Abono a tasa cero');
+  if (p && p.txnId && dbOne(`SELECT 1 x FROM TRANSACTIONSTABLE WHERE transactionsTableID=? AND deletedTransaction=6`, [p.txnId])) {
+    const legs = getTransferLegs(p.txnId).map(x=>dbOne(`SELECT transactionsTableID id, amount FROM TRANSACTIONSTABLE WHERE transactionsTableID=?`, [x])).filter(Boolean);
+    const inn = legs.find(l=>l.amount>=0), out = legs.find(l=>l.amount<0);
+    if (inn) App.db.run(`UPDATE TRANSACTIONSTABLE SET amount=?, date=?, accountID=?, accountPairID=?, notes=?, itemID=? WHERE transactionsTableID=?`, [scaled, dateStr, o.debtAcc, o.fromAcc, o.descr||'', itemId, inn.id]);
+    if (out) App.db.run(`UPDATE TRANSACTIONSTABLE SET amount=?, date=?, accountID=?, accountPairID=?, notes=?, itemID=? WHERE transactionsTableID=?`, [-scaled, dateStr, o.fromAcc, o.debtAcc, o.descr||'', itemId, out.id]);
+    return inn ? inn.id : p.txnId;
+  }
+  const grp = Math.max(Date.now(), ((dbOne(`SELECT MAX(transferGroupID) m FROM TRANSACTIONSTABLE`)||{}).m||0) + 1);
+  insertTransaction({ amount:-scaled, currency:'USD', date:dateStr, typeId:TXN_TYPE.TRANSFERENCIA, categoryId:ocTransferCategoryId(), accountId:o.fromAcc, accountPairId:o.debtAcc, notes:o.descr, transferGroupId:grp, itemId });
+  return insertTransaction({ amount:scaled, currency:'USD', date:dateStr, typeId:TXN_TYPE.TRANSFERENCIA, categoryId:ocTransferCategoryId(), accountId:o.debtAcc, accountPairId:o.fromAcc, notes:o.descr, transferGroupId:grp, itemId });
+}
+
+function tcmOpenZeroPay(zeroId, id) {
+  ocZeroEnsureCols(); ocZeroPayEnsureCols();
+  const z = dbOne(`SELECT * FROM OC_TC_ZERO WHERE id=?`, [zeroId]);
+  const p = id ? dbOne(`SELECT * FROM OC_TC_ZEROPAY WHERE id=?`, [id]) : null;
+  const debt = z && z.debtAccountId ? z.debtAccountId : null;
+  const day0 = p ? String(p.date).slice(0,10) : tcmToday();
+  const from = p && p.fromAccountId ? p.fromAccountId : (p && p.txnId ? (dbOne(`SELECT accountPairID a FROM TRANSACTIONSTABLE WHERE transactionsTableID=?`, [p.txnId])||{}).a : null) || (debt ? ocDefaultPayFrom(debt) : '');
+  const debtName = debt ? (ocAccRows([debt])[0]||{}).accountName : '';
+  window.__zpCtx = { zeroId, id, debt };
+  openModal(`<div class="modal"><div class="modal-head"><h3>${p?'Editar abono directo':'Abono directo al plan'}</h3><button class="modal-close" onclick="closeModal()" aria-label="Cerrar">✕</button></div>
+    <div class="modal-body"><p class="hint" style="margin-top:0;">Para pagos fuera de las cuotas mensuales: un adelanto, una cancelación total o un pago en agencia.</p>
+      <div class="form-grid">
+      <div class="field"><label for="zp-amount">Monto</label><input id="zp-amount" type="number" step="0.01" min="0" value="${p?p.amount:''}"></div>
+      <div class="field"><label for="zp-date">Fecha</label><input id="zp-date" type="date" value="${day0}" onchange="ocZeroPayHint()"></div>
+      ${debt ? `<div class="field span-2" id="zp-from-wrap"><label>Pagado desde</label>${accPickerField('zp-from', from, { ids: ocPayFromIds(debt), title:'¿Desde qué cuenta pagaste?' })}</div>` : ''}
+      <div class="field span-2"><label for="zp-desc">Descripción</label><input id="zp-desc" value="${escapeHtml(p?p.descr||'':'')}" placeholder="Ej. Cancelación total en agencia"></div>
+      <div class="field span-2 cuota-note" id="zp-note" ${debt?'':'style="display:none"'}></div>
+    </div></div>
+    <div class="modal-foot">${p?`<button class="btn danger" onclick="tcmDeleteZeroPay('${p.id}')">Eliminar</button>`:''}
+      <button class="btn ghost" onclick="closeModal()">Cancelar</button><button class="btn primary" onclick="tcmSaveZeroPay('${zeroId}', ${p?`'${p.id}'`:'null'})">Guardar</button></div></div>`);
+  if (debt) ocZeroPayHint(debtName);
+}
+function ocZeroPayHint(name) {
+  const C = window.__zpCtx; if (!C || !C.debt) return;
+  name = name || (ocAccRows([C.debt])[0]||{}).accountName || '';
+  const day = document.getElementById('zp-date').value, hist = ocIsHistoric(day, C.debt);
+  const wrap = document.getElementById('zp-from-wrap'); if (wrap) wrap.style.display = hist ? 'none' : '';
+  document.getElementById('zp-note').innerHTML = hist
+    ? `<p style="margin:0;"><b>Abono histórico.</b> Es anterior al saldo inicial de <b>${escapeHtml(name)}</b>, que ya lo descuenta; solo se anota en el plan.</p>`
+    : `<p style="margin:0;">Se registra como transferencia hacia <b>${escapeHtml(name)}</b>: la deuda de la tasa cero baja en este monto.</p>`;
+}
+function tcmSaveZeroPay(zeroId, id) {
+  ocZeroPayEnsureCols();
+  const C = window.__zpCtx || {};
+  const amount = parseFloat(document.getElementById('zp-amount').value);
+  if (!(amount>0)) { showToast('Escribe el monto del abono.', 'error'); return; }
+  const day = document.getElementById('zp-date').value || tcmToday();
+  const descr = document.getElementById('zp-desc').value.trim();
+  const p = id ? dbOne(`SELECT * FROM OC_TC_ZEROPAY WHERE id=?`, [id]) : null;
+  let txnId = p ? p.txnId : null, fromAcc = null;
+  App.db.run('BEGIN');
+  try {
+    if (C.debt && !ocIsHistoric(day, C.debt)) {
+      fromAcc = Number((document.getElementById('zp-from')||{}).value);
+      if (!fromAcc) throw new Error('Elige la cuenta desde la que pagaste.');
+      txnId = ocZeroPayTransfer(p, { amount, day, debtAcc: C.debt, fromAcc, descr });
+      tciEnsureTables(); tciSetConfig('zeroPayFrom', fromAcc);
+    } else if (p && p.txnId) {
+      // pasó a ser histórico o el plan ya no tiene cuenta: se quita la transferencia
+      deleteTransaction(p.txnId); txnId = null;
+    }
+    App.db.run(`INSERT OR REPLACE INTO OC_TC_ZEROPAY (id, zeroId, date, amount, descr, txnId, fromAccountId) VALUES (?,?,?,?,?,?,?)`,
+      [id||tcmUid(), zeroId, day, amount, descr, txnId || null, fromAcc]);
+    App.db.run('COMMIT');
+  } catch (err) { try { App.db.run('ROLLBACK'); } catch(e) {} showToast(err.message, 'error'); return; }
+  scheduleAutosave();
+  const z = dbOne(`SELECT * FROM OC_TC_ZERO WHERE id=?`, [zeroId]);
+  if (z && z.activa && Number(z.montoOriginal)>0 && tcmZeroStats(z).pend<=0.004) { dbRun(`UPDATE OC_TC_ZERO SET activa=0 WHERE id=?`, [zeroId]); showToast('Plan liquidado.', 'success'); }
+  else showToast(txnId ? 'Abono registrado; la deuda de la cuenta bajó.' : 'Abono anotado en el plan.', 'success');
+  closeModal(); tcmAfterChange();
+}
+function tcmDeleteZeroPay(id) {
+  ocZeroPayEnsureCols();
+  const p = dbOne(`SELECT * FROM OC_TC_ZEROPAY WHERE id=?`, [id]); if (!p) return;
+  if (p.txnId) deleteTransaction(p.txnId);
+  dbRun(`DELETE FROM OC_TC_ZEROPAY WHERE id=?`, [id]);
+  closeModal(); showToast(p.txnId ? 'Abono eliminado, también de la cuenta.' : 'Abono eliminado.', 'success'); tcmAfterChange();
+}
+
+/* ---------- conciliación de abonos directos ---------- */
+/* Transferencias que llegaron a la cuenta de la deuda desde cuentas que no son tarjetas */
+function ocDebtDirectTransfers(debtAcc) {
+  return dbAll(`SELECT d.transactionsTableID id, d.date, d.amount, d.accountPairID src, i.itemName, d.notes FROM TRANSACTIONSTABLE d
+      LEFT JOIN ITEMTABLE i ON i.itemTableID=d.itemID
+      WHERE d.accountID=? AND d.transactionTypeID=5 AND d.amount>0 AND d.deletedTransaction=6
+        AND d.accountPairID NOT IN (SELECT accountId FROM OC_TC_CARD) ORDER BY d.date`, [debtAcc]);
+}
+function ocZeroPayDiagnose(z) {
+  ocZeroPayEnsureCols();
+  const start = ocDebtStart(z.debtAccountId);
+  const pays = dbAll(`SELECT * FROM OC_TC_ZEROPAY WHERE zeroId=? ORDER BY date`, [z.id]);
+  const linkedTxn = new Set(dbAll(`SELECT txnId FROM OC_TC_ZEROPAY WHERE txnId IS NOT NULL`).map(r=>r.txnId));
+  const transfers = ocDebtDirectTransfers(z.debtAccountId).filter(t=>!linkedTxn.has(t.id));
+  const used = new Set();
+  // abonos del plan, posteriores al saldo inicial, que no llegaron a la cuenta
+  const missing = pays.filter(p=>!p.txnId && !(start && String(p.date).slice(0,10) < start.slice(0,10))).map(p=>{
+    const day = String(p.date).slice(0,10);
+    const m = transfers.find(t=>!used.has(t.id) && Math.abs(t.amount/SCALE - p.amount) < 0.005 && Math.abs((new Date(t.date.slice(0,10)) - new Date(day))/86400000) <= 7);
+    if (m) used.add(m.id);
+    return { p, match: m || null };
+  });
+  // transferencias a la cuenta que el plan no conoce
+  const orphan = transfers.filter(t=>!used.has(t.id) && !(start && t.date < start));
+  return { missing, orphan };
 }
 
 main();
