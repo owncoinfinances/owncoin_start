@@ -1292,6 +1292,8 @@ html[data-theme="dark"] .cal-cell.due{ box-shadow:inset 0 0 0 2px #e07a64; backg
 .tcm-sticky .tcm-stmtbar{ margin-bottom:0; }
 .tcm-sticky-hint{ display:block; margin:-2px 0 12px; }
 @media(max-width:720px){ .tcm-sticky{ margin:0 -12px 10px; padding:6px 12px 8px; } .tcm-sticky .tcm-tabs{ margin-bottom:6px; } }
+.tcm-sticky.tabs-only .tcm-tabs{ margin-bottom:0; }
+.tcm-sticky.tabs-only{ margin-bottom:14px; }
 /* Etiquetas de un movimiento siempre visibles, debajo del nombre */
 .tcm-li .tg{ display:flex; flex-wrap:wrap; gap:4px; margin:2px 0 1px; }
 .tcm-li .tg .tcm-tag{ margin-left:0; }
@@ -5050,18 +5052,22 @@ function renderTarjetas() {
       <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
         <button class="btn primary" onclick="tcmOpenCardForm()">Agregar tarjeta</button>
       </div></div>`;
+    const t0 = el.querySelector('.tcm-tabs'); if (t0) { const w0 = document.createElement('div'); w0.className = 'tcm-sticky tabs-only'; t0.before(w0); w0.appendChild(t0); }
     return;
   }
   const body = { estado:tcmRenderEstado, zero:tcmRenderZero, dist:tcmRenderDist, hist:tcmRenderHist, cfg:tcmRenderCfg }[S.tab](cards);
   el.innerHTML = tabsHtml + body;
-  // Estado de cuenta y Distribución: pestañas y mes quedan fijos arriba al desplazarse
-  if (S.tab === 'estado' || S.tab === 'dist') {
-    const tabs = el.querySelector('.tcm-tabs'), bar = el.querySelector('.tcm-stmtbar');
-    if (tabs && bar) {
-      const w = document.createElement('div'); w.className = 'tcm-sticky';
-      tabs.before(w); w.appendChild(tabs); w.appendChild(bar);
+  // Las pestañas quedan fijas arriba en todas las subsecciones; en Estado de cuenta y
+  // Distribución también el selector de mes
+  const tabsEl = el.querySelector('.tcm-tabs');
+  if (tabsEl) {
+    const w = document.createElement('div'); w.className = 'tcm-sticky';
+    tabsEl.before(w); w.appendChild(tabsEl);
+    const bar = (S.tab === 'estado' || S.tab === 'dist') ? el.querySelector('.tcm-stmtbar') : null;
+    if (bar) {
+      w.appendChild(bar);
       const hint = bar.querySelector('.hint'); if (hint) { hint.classList.add('tcm-sticky-hint'); w.after(hint); }
-    }
+    } else w.classList.add('tabs-only');
   }
 }
 
